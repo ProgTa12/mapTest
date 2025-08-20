@@ -1,0 +1,17 @@
+[Unit]
+Description=LoRa Gateway → Firebase Uploader (Admin SDK)
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/lora_project
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/pi/lora_project/.venv/bin/python /home/pi/lora_project/lora_gateway.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
