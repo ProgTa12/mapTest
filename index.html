@@ -1,0 +1,617 @@
+<!-- 0821 0712 -->
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>실시간 위치 및 위험지역 경고</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    #map { width: 100vw; height: 100vh; }
+    #nicknamePrompt, #userListToggle, #userList, #placePanel,
+    #dangerForm, #dangerListWrapper, #dangerZoneBtn, #dangerToggle, #gpsPanel { z-index: 1000; }
+
+    #nicknamePrompt {
+      position:absolute; top:20px; left:50%; transform:translateX(-50%);
+      background:white; padding:15px; border:1px solid #ccc; border-radius:8px;
+      text-align:center;
+    }
+    #userListToggle {
+      position:absolute; top:20px; right:20px;
+      background:#007bff; color:white; border:none; border-radius:6px;
+      padding:10px 15px; cursor:pointer;
+    }
+    #userList {
+      position:absolute; top:60px; right:20px; background:white;
+      border:1px solid #ccc; border-radius:8px; padding:10px;
+      max-height:250px; overflow-y:auto; min-width:200px; display:none;
+    }
+
+    #placePanel {
+      position: absolute; top: 60px; left: 10px;
+      width: 320px; max-height: 420px;
+      overflow-y: auto; background: white;
+      border: 1px solid #ccc; border-radius: 8px;
+      padding: 10px; font-size: 14px; display: none;
+    }
+    #placePanel button {
+      float: right; border: 1px solid #ccc; background: #f8f8f8;
+      font-size: 12px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    }
+    .place { margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #eee; }
+    .place-title { font-weight: bold; margin-bottom: 4px; }
+
+    #dangerForm {
+      position:absolute; top:100px; right:20px; background:white; padding:10px;
+      border:1px solid #ccc; border-radius:8px; display:none; min-width: 260px;
+    }
+    #dangerListWrapper {
+      position:absolute; bottom:20px; right:20px; background:white;
+      padding:10px; border:1px solid #ccc; border-radius:8px;
+      width:300px; max-height:300px; overflow:auto; display:none;
+    }
+    .danger-header { display: flex; justify-content: space-between; align-items: center; }
+    .danger-header button {
+      border: 1px solid #ccc; background: #f8f8f8; font-size: 12px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    }
+    #dangerToggle {
+      position: absolute; bottom:20px; right:320px;
+      background:#dc3545; color:white; border:none; padding:8px 12px;
+      border-radius:6px; font-weight:bold; cursor:pointer; display:none;
+    }
+    #dangerZoneBtn {
+      position:absolute; bottom:20px; right:20px;
+      background:#007bff; color:white; border:none; padding:8px 12px;
+      border-radius:6px; font-weight:bold; cursor:pointer;
+    }
+    .danger-actions { display:flex; gap:6px; margin-top:4px; }
+    .danger-item { margin-bottom:6px; }
+
+    /* 브라우저 업로드 상태/버튼 패널 */
+    #gpsPanel {
+      position:absolute; top:20px; left:20px; background:white;
+      border:1px solid #ccc; border-radius:8px; padding:10px; min-width:260px;
+    }
+    #gpsPanel .row { display:flex; gap:6px; align-items:center; }
+    #gpsStatus { margin-top:6px; font-size:12px; color:#333; }
+
+    /* 마커 내부 나침반 삼각형 — 회전은 CSS 변수로 */
+    .arrow {
+      width:0;height:0;
+      border-left:7px solid transparent;
+      border-right:7px solid transparent;
+      border-bottom:12px solid black;
+      margin:0 auto;
+      transform: rotate(var(--rot, 0deg));
+    }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+
+<!-- 브라우저 GPS 업로드 패널 (Web Serial) -->
+<div id="gpsPanel">
+  <div class="row">
+    <button id="connectGpsBtn">GPS 연결(브라우저 업로드)</button>
+    <button id="stopGpsBtn">중지</button>
+  </div>
+  <div id="gpsStatus">대기 중…</div>
+</div>
+
+<!-- 닉네임 입력 -->
+<div id="nicknamePrompt">
+  <label>닉네임 입력: <input type="text" id="nicknameInput"></label>
+  <button id="nicknameBtn">확인</button>
+</div>
+
+<!-- 접속자 리스트 -->
+<button id="userListToggle">접속자</button>
+<div id="userList">
+  <ul id="userListUl" style="list-style:none; padding-left:0; margin:0;"></ul>
+  <div style="margin-top:10px; display:flex; gap:6px;">
+    <input type="text" id="editNicknameInput" placeholder="새 닉네임" style="flex:1;">
+    <button id="editNicknameBtn">수정</button>
+  </div>
+</div>
+
+<!-- 장소 검색 패널 -->
+<div id="placePanel">
+  <button id="placeCloseBtn">닫기</button>
+  <div id="placeContent"></div>
+</div>
+
+<!-- 위험지역 -->
+<div id="dangerForm"></div>
+<button id="dangerToggle">위험지역 리스트</button>
+<button id="dangerZoneBtn">위험지역 설정</button>
+<div id="dangerListWrapper">
+  <div class="danger-header">
+    <b>위험지역 목록</b>
+    <button id="dangerCloseBtn">닫기</button>
+  </div>
+  <ul id="dangerList" style="padding-left:16px;"></ul>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js";
+  import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-database.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js";
+
+  // Kakao Local REST API 키 (본인 키로 교체)
+  const KAKAO_REST_KEY = "여기에_본인_KAKAO_REST_API_KEY";
+
+  // Firebase 설정
+  const firebaseConfig = {
+    apiKey: "AIzaSyBvLnMA7jF-1AoDQlgLdEDKFDyWk4N29mY",
+    authDomain: "gps-mapping-397bc.firebaseapp.com",
+    projectId: "gps-mapping-397bc",
+    storageBucket: "gps-mapping-397bc.appspot.com",
+    messagingSenderId: "338156458292",
+    appId: "1:338156458292:web:8380c00a6fbd292cd41561",
+    databaseURL: "https://gps-mapping-397bc-default-rtdb.asia-southeast1.firebasedatabase.app"
+  };
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  const auth = getAuth(app);
+
+  // DOM helpers
+  const $ = (id) => document.getElementById(id);
+  const on = (id, evt, fn) => { const el = $(id); if (!el) return null; el.addEventListener(evt, fn); return el; };
+  const setDisplay = (id, v) => { const el = $(id); if (el) el.style.display = v; };
+
+  // 지도
+  const map = L.map('map').setView([36.5, 127.8], 7);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+  // 상태
+  const userMarkers = {};
+  const userData = {};
+  let myUid = null;
+  let myNickname = "익명";
+  let myHeading = 0;
+  let subscribed = false;
+  let currentClickMarker = null;
+  let selectedLatLng = null;
+
+  // 접속자 토글
+  on("userListToggle", "click", () => {
+    const box = $("userList");
+    if (!box) return;
+    box.style.display = (box.style.display === "block") ? "none" : "block";
+  });
+
+  // 닉네임 입력
+  on("nicknameBtn", "click", () => {
+    const input = $("nicknameInput")?.value.trim();
+    if (!input) { alert("닉네임을 입력하세요."); return; }
+    myNickname = input;
+    setDisplay("nicknamePrompt", "none");
+    setupDeviceOrientation();
+    // geolocation 자동 시작 제거(Chromium에서 429 방지)
+  });
+
+  // 닉네임 수정 버튼: DB에도 즉시 반영
+  on("editNicknameBtn", "click", () => {
+    const n = $("editNicknameInput")?.value.trim();
+    if (!n) return;
+    myNickname = n;
+    if (myUid) set(ref(db, "locations/" + myUid + "/nickname"), n);
+  });
+
+  // 익명 로그인 직후 항상 구독 시작(지오로케이션 시작 없음)
+  onAuthStateChanged(auth, user => {
+    if (user) {
+      myUid = user.uid;
+      if (!subscribed) { subscribed = true; listenAllUsers(); }
+    }
+  });
+  signInAnonymously(auth).catch(console.error);
+
+  // 내 위치 업로드
+  function uploadLocation(uid, lat, lng, heading) {
+    set(ref(db, "locations/" + uid), {
+      latitude: lat,
+      longitude: lng,
+      heading: heading,
+      nickname: myNickname,
+      timestamp: Date.now()
+    });
+  }
+
+  // 마커 표시
+  function showUser(uid, lat, lng, heading, nickname = "익명") {
+    const icon = L.divIcon({
+      className: "custom-icon",
+      html: `<div style="text-align:center;">
+        <div class="arrow" style="--rot:${(heading||0)}deg"></div>
+        <div style="width:12px; height:12px; background:${uid === myUid ? 'red' : 'blue'}; border-radius:50%; margin:2px auto 0;"></div>
+      </div>`,
+      iconSize: [30, 40], iconAnchor: [15, 20]
+    });
+    const popup = `<b>${uid === myUid ? nickname + " (나)" : nickname}</b><br>위도: ${lat.toFixed(6)}<br>경도: ${lng.toFixed(6)}`;
+
+    if (!userMarkers[uid]) {
+      userMarkers[uid] = L.marker([lat, lng], { icon }).addTo(map).bindPopup(popup);
+    } else {
+      userMarkers[uid].setLatLng([lat, lng]);
+      userMarkers[uid].setIcon(icon);
+      userMarkers[uid].bindPopup(popup);
+    }
+    userData[uid] = { lat, lng, nickname };
+    renderUserList();
+  }
+
+  // 접속자 리스트
+  function renderUserList() {
+    const ul = $("userListUl"); if (!ul) return;
+    ul.innerHTML = "";
+    for (const uid in userData) {
+      const li = document.createElement("li");
+      li.style.padding = "6px 4px";
+      li.style.cursor = "pointer";
+      li.textContent = uid === myUid ? `${myNickname} (나)` : userData[uid].nickname;
+      li.onclick = () => {
+        const { lat, lng } = userData[uid];
+        map.setView([lat, lng], 15);
+        if (userMarkers[uid]) userMarkers[uid].openPopup();
+      };
+      ul.appendChild(li);
+    }
+  }
+
+  // ===== 중요: geolocation 사용 부분 통째로 비활성화 =====
+  /*
+  function trackMyLocation(uid) {
+    navigator.geolocation.watchPosition(pos => {
+      const { latitude, longitude, heading: geoHeading } = pos.coords;
+      if (typeof geoHeading === "number" && !Number.isNaN(geoHeading)) {
+        myHeading = geoHeading;
+      }
+      showUser(uid, latitude, longitude, myHeading, myNickname);
+      uploadLocation(uid, latitude, longitude, myHeading);
+      checkDangerZones(latitude, longitude);
+    }, console.error, { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 });
+  }
+  */
+
+  // 모든 사용자 구독
+  function listenAllUsers() {
+    onValue(ref(db, "locations"), snapshot => {
+      const data = snapshot.val() || {};
+      for (const uid in data) {
+        const u = data[uid];
+        if (u && typeof u.latitude === "number" && typeof u.longitude === "number") {
+          showUser(uid, u.latitude, u.longitude, u.heading || 0, u.nickname || "익명");
+        }
+      }
+    });
+  }
+
+  // 지도 클릭 시 주변 장소 패널 (카카오 Local REST API)
+  map.on("click", async (e) => {
+    const lat = e.latlng.lat, lng = e.latlng.lng;
+    selectedLatLng = e.latlng;
+
+    if (currentClickMarker) map.removeLayer(currentClickMarker);
+    currentClickMarker = L.marker([lat, lng]).addTo(map).bindPopup("선택한 위치").openPopup();
+
+    setDisplay("placePanel", "block");
+    const placeContent = $("placeContent");
+    if (!placeContent) return;
+    placeContent.textContent = "주변 장소를 불러오는 중...";
+
+    try {
+      const cats = ["FD6","CE7","BK9","PO3","AD5"]; // 음식점,카페,은행,공공,숙박 등
+      const headers = { Authorization: `KakaoAK ${KAKAO_REST_KEY}` };
+
+      const calls = cats.map((code) =>
+        fetch(
+          `https://dapi.kakao.com/v2/local/search/category.json?category_group_code=${code}&x=${lng}&y=${lat}&radius=500&size=5`,
+          { headers }
+        ).then(r => r.ok ? r.json() : Promise.reject(r.status))
+         .catch(() => ({ documents: [] }))
+      );
+
+      const results = (await Promise.all(calls))
+        .flatMap(r => r.documents || [])
+        .sort((a, b) => (Number(a.distance||1e9) - Number(b.distance||1e9)));
+
+      if (!results.length) {
+        placeContent.textContent = "반경 500m 내 검색 결과가 없습니다.";
+        return;
+      }
+
+      placeContent.innerHTML =
+        "<b>주변 장소</b><br><br>" +
+        results.map(p => `
+          <div class="place">
+            <div class="place-title">${p.place_name}</div>
+            <div>${p.road_address_name || p.address_name || ""}</div>
+            <div style="font-size:12px;color:#666;">
+              ${p.category_name || ""} · ${p.distance ? `${p.distance}m` : ""}
+            </div>
+          </div>
+        `).join("");
+
+    } catch (err) {
+      console.error("카카오 장소 검색 오류:", err);
+      placeContent.textContent = "장소 정보를 불러오는 데 실패했습니다.";
+    }
+  });
+
+  // 기기 방향 센서 → 마커 arrow에만 적용
+  function setupDeviceOrientation() {
+    const start = () => {
+      window.addEventListener('deviceorientation', (e) => {
+        if (typeof e.alpha === 'number' && !Number.isNaN(e.alpha)) {
+          myHeading = e.alpha; // 0~360
+        }
+      }, true);
+    };
+    if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission().then((res) => { if (res === 'granted') start(); }).catch(console.warn);
+    } else {
+      start();
+    }
+  }
+
+  // 위험지역 관련
+  function ensureDangerHatchPattern() {
+    const pane = map.getPanes().overlayPane;
+    let svg = pane.querySelector('svg');
+    if (!svg) { L.svg().addTo(map); svg = pane.querySelector('svg'); }
+    let defs = svg.querySelector('defs');
+    if (!defs) { defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs'); svg.insertBefore(defs, svg.firstChild); }
+    if (!svg.querySelector('#dangerHatch')) {
+      const pattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
+      pattern.setAttribute('id', 'dangerHatch'); pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+      pattern.setAttribute('width', '8'); pattern.setAttribute('height', '8');
+      pattern.setAttribute('patternTransform', 'rotate(45)');
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', '0'); line.setAttribute('y1', '0');
+      line.setAttribute('x2', '0'); line.setAttribute('y2', '8');
+      line.setAttribute('stroke', '#d22'); line.setAttribute('stroke-width', '4'); line.setAttribute('opacity', '0.6');
+      pattern.appendChild(line); defs.appendChild(pattern);
+    }
+  }
+  function parseRadiusToMeters(raw) {
+    if (!raw) return NaN;
+    const m = String(raw).trim().match(/^\s*([\d.]+)\s*(km|m)?\s*$/i);
+    if (!m) return NaN;
+    const val = parseFloat(m[1]); const unit = (m[2] || "m").toLowerCase();
+    if (!(val > 0)) return NaN;
+    return unit === "km" ? val * 1000 : val;
+  }
+  function updateDangerUI() {
+    const toggleBtn = $("dangerToggle");
+    const wrapper = $("dangerListWrapper");
+    if (!toggleBtn || !wrapper) return;
+    if (dangerZones.length === 0) { toggleBtn.style.display = "none"; wrapper.style.display = "none"; }
+    else { if (wrapper.style.display !== "block") toggleBtn.style.display = "inline-block"; }
+  }
+  const dangerZones = []; const dangerOverlays = [];
+  on("dangerZoneBtn", "click", () => {
+    if (!selectedLatLng) { alert("먼저 지도에서 위치를 선택하세요."); return; }
+    openDangerForm({ mode: "add" });
+  });
+  function openDangerForm({ mode, index = null }) {
+    const form = $("dangerForm"); if (!form) return;
+    const isEdit = mode === "edit";
+    const zone = isEdit ? dangerZones[index] : null;
+    const defaultName = isEdit ? zone.name : "";
+    const defaultRadius = isEdit ? zone.radius : "";
+    form.innerHTML = `
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <b>${isEdit ? "위험지역 수정" : "위험지역 추가"}</b>
+        <label>이름: <input type="text" id="dangerName" placeholder="예: 공사구간" value="${defaultName}"></label>
+        <label>반경 입력: <input type="text" id="dangerRadiusCustom" placeholder="예: 50, 50m, 0.05km" value="${defaultRadius}"></label>
+        <div class="danger-actions">
+          <button id="${isEdit ? "saveDangerBtn" : "addDangerBtn"}">${isEdit ? "저장" : "추가"}</button>
+          <button id="cancelDangerBtn" type="button">취소</button>
+        </div>
+      </div>
+    `;
+    setDisplay("dangerForm", "block");
+    on("cancelDangerBtn", "click", () => setDisplay("dangerForm", "none"));
+    if (isEdit) {
+      on("saveDangerBtn", "click", () => {
+        const nameEl = $("dangerName"); const customEl = $("dangerRadiusCustom");
+        if (!nameEl || !customEl) return;
+        const name = nameEl.value.trim();
+        const radius = parseRadiusToMeters(customEl.value);
+        if (!name) { alert("이름을 입력하세요."); return; }
+        if (!(radius > 0)) { alert("반경을 올바르게 입력하세요. 예: 50, 50m, 0.05km"); return; }
+        zone.name = name; zone.radius = radius; zone.circle.setRadius(radius);
+        if (zone.circle._path) zone.circle._path.setAttribute('fill', 'url(#dangerHatch)');
+        const tt = zone.circle.getTooltip(); if (tt) tt.setContent(zone.name); else zone.circle.bindTooltip(zone.name, { direction:'top', sticky:true, opacity:0.9 });
+        renderDangerList(); setDisplay("dangerForm", "none");
+      });
+    } else {
+      on("addDangerBtn", "click", () => {
+        const nameEl = $("dangerName"); const customEl = $("dangerRadiusCustom");
+        if (!nameEl || !customEl || !selectedLatLng) return;
+        const name = nameEl.value.trim();
+        const radius = parseRadiusToMeters(customEl.value);
+        if (!name) { alert("이름을 입력하세요."); return; }
+        if (!(radius > 0)) { alert("반경을 올바르게 입력하세요. 예: 50, 50m, 0.05km"); return; }
+        ensureDangerHatchPattern();
+        const circle = L.circle([selectedLatLng.lat, selectedLatLng.lng], {
+          radius, color: "#d22", weight: 2, fillColor: "#f88", fillOpacity: 1.0, dashArray: "4,6"
+        });
+        circle.once('add', () => { if (circle._path) circle._path.setAttribute('fill', 'url(#dangerHatch)'); });
+        circle.bindTooltip(name, { direction:'top', sticky:true, opacity:0.9 });
+        circle.on('click', (ev) => {
+          L.DomEvent.stopPropagation(ev);
+          const idx = dangerZones.findIndex(z => z.circle === circle);
+          if (idx !== -1) openDangerForm({ mode: "edit", index: idx });
+        });
+        circle.addTo(map);
+        const zone = { name, lat: selectedLatLng.lat, lng: selectedLatLng.lng, radius, circle };
+        dangerZones.push(zone); dangerOverlays.push(circle);
+        renderDangerList(); setDisplay("dangerForm", "none");
+      });
+    }
+  }
+  function renderDangerList() {
+    const list = $("dangerList"); if (!list) return;
+    list.innerHTML = "";
+    dangerZones.forEach((zone, index) => {
+      const r = (Math.round(zone.radius * 10) / 10).toString().replace(/\.0$/, "");
+      const li = document.createElement("li");
+      li.className = "danger-item";
+      li.innerHTML = `
+        <div><b>${zone.name}</b> (${zone.lat.toFixed(4)}, ${zone.lng.toFixed(4)}) [${r}m]</div>
+        <div class="danger-actions">
+          <button data-idx="${index}" class="danger-edit">편집</button>
+          <button data-idx="${index}" class="danger-remove">삭제</button>
+        </div>
+      `;
+      list.appendChild(li);
+    });
+    list.querySelectorAll(".danger-edit").forEach(btn => btn.addEventListener("click", (ev) => {
+      const idx = parseInt(ev.currentTarget.getAttribute("data-idx"), 10);
+      openDangerForm({ mode: "edit", index: idx });
+    }));
+    list.querySelectorAll(".danger-remove").forEach(btn => btn.addEventListener("click", (ev) => {
+      const idx = parseInt(ev.currentTarget.getAttribute("data-idx"), 10);
+      removeDanger(idx);
+    }));
+    updateDangerUI();
+  }
+  function removeDanger(index) {
+    if (dangerOverlays[index]) map.removeLayer(dangerOverlays[index]);
+    dangerZones.splice(index, 1); dangerOverlays.splice(index, 1);
+    renderDangerList();
+    if (dangerZones.length === 0) { setDisplay("dangerListWrapper", "none"); setDisplay("dangerToggle", "none"); }
+  }
+  function getDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) ** 2 +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(1-a), Math.sqrt(a));
+    return R * c;
+  }
+  function checkDangerZones(lat, lng) {
+    dangerZones.forEach(zone => {
+      const d = getDistance(lat, lng, zone.lat, zone.lng);
+      if (d <= zone.radius) {
+        let level = "";
+        if (d <= 10) level = "진동 강함 (10m)";
+        else if (d <= 50) level = "진동 중간 (50m)";
+        else if (d <= 100) level = "진동 약함 (100m)";
+        else level = `감지됨 (${zone.radius}m)`;
+        console.log(`[위험지역 경고] ${zone.name} - ${level}`);
+      }
+    });
+  }
+  on("placeCloseBtn", "click", () => setDisplay("placePanel", "none"));
+  on("dangerToggle", "click", () => { setDisplay("dangerToggle", "none"); setDisplay("dangerListWrapper", "block"); });
+  on("dangerCloseBtn", "click", () => { setDisplay("dangerListWrapper", "none"); setDisplay("dangerToggle", dangerZones.length>0?"inline-block":"none"); });
+  updateDangerUI();
+
+  // ===== Chromium Web Serial: NEO-6M 읽기 → 업로드 =====
+  let serialActive = false;
+  let port, reader;
+  let lastUploadAt = 0;
+
+  function setGpsStatus(msg) {
+    const el = $("gpsStatus");
+    if (el) el.textContent = msg;
+  }
+
+  function safeUpload(uid, lat, lon, heading=0) {
+    const now = Date.now();
+    if (now - lastUploadAt < 3000) return; // 3초 쿨다운
+    lastUploadAt = now;
+    showUser(uid, lat, lon, heading, myNickname);
+    uploadLocation(uid, lat, lon, heading);
+    checkDangerZones(lat, lon);
+    setGpsStatus(`업로드: ${lat.toFixed(6)}, ${lon.toFixed(6)} (${new Date().toLocaleTimeString()})`);
+  }
+
+  function nmeaToDecimal(raw, hemi) {
+    if (!raw || !hemi) return NaN;
+    const isLon = (hemi === "E" || hemi === "W");
+    const dLen = isLon ? 3 : 2;
+    const deg = parseInt(raw.slice(0, dLen), 10);
+    const min = parseFloat(raw.slice(dLen));
+    if (!Number.isFinite(deg) || !Number.isFinite(min)) return NaN;
+    let dec = deg + (min / 60);
+    if (hemi === "S" || hemi === "W") dec = -dec;
+    return dec;
+  }
+
+  async function connectGpsAndUpload() {
+    try {
+      if (!myUid) { alert("닉네임 입력 후 잠시 기다리세요(로그인 완료 필요)."); return; }
+      if (!("serial" in navigator)) {
+        alert("이 브라우저는 Web Serial을 지원하지 않습니다. Chromium 최신 버전이 필요합니다.");
+        return;
+      }
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 9600 });
+      reader = port.readable.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      serialActive = true;
+      setGpsStatus("GPS 연결됨. 수신 대기…");
+
+      while (serialActive) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const raw of lines) {
+          const s = raw.trim();
+          if (!s.startsWith("$")) continue;
+
+          if (s.startsWith("$GPRMC") || s.startsWith("$GPGGA")) {
+            const parts = s.split(",");
+            let lat, lon;
+
+            if (s.startsWith("$GPRMC")) {
+              // $GPRMC,hhmmss.s,A,llll.ll,a,yyyyy.yy,a,...
+              const status = parts[2]; // A=valid
+              if (status !== "A") continue;
+              lat = nmeaToDecimal(parts[3], parts[4]);
+              lon = nmeaToDecimal(parts[5], parts[6]);
+            } else {
+              // $GPGGA,hhmmss,llll.ll,a,yyyyy.yy,a,fix,...
+              const fix = parts[6]; // 0=invalid
+              if (fix === "0") continue;
+              lat = nmeaToDecimal(parts[2], parts[3]);
+              lon = nmeaToDecimal(parts[4], parts[5]);
+            }
+
+            if (Number.isFinite(lat) && Number.isFinite(lon)) {
+              safeUpload(myUid, lat, lon, 0);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Web Serial 오류:", e);
+      alert("GPS 연결 실패 또는 중단: " + e);
+      setGpsStatus("오류: " + e);
+      await stopGps();
+    }
+  }
+
+  async function stopGps() {
+    serialActive = false;
+    try { if (reader) { await reader.cancel(); reader.releaseLock(); } } catch {}
+    try { if (port) await port.close(); } catch {}
+    setGpsStatus("중지됨");
+  }
+
+  on("connectGpsBtn", "click", () => connectGpsAndUpload());
+  on("stopGpsBtn", "click", () => stopGps());
+</script>
+</body>
+</html>
